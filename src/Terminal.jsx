@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
+import { getOrCreateClientId } from './utils';
 
 // THEMES & CONSTANTS
 const matrixTheme = {
@@ -92,12 +93,19 @@ export default function ChatTerminal() {
       .slice(-MAX_HISTORY);
     setHistory(historyRef.current);
     try {
+      let clientId = getOrCreateClientId();
       const res = await fetch(`${import.meta.env.VITE_API_URL}/api/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'client-id': clientId || 'anonymous'  // fallback to avoid sending undefined
+        },
         body: JSON.stringify({ messages: historyRef.current, stream: true }),
       });
-      if (!res.ok || !res.body) throw new Error();
+      if (!res.ok || !res.body) {
+        console.error   
+        throw new Error(); 
+      }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -106,32 +114,39 @@ export default function ChatTerminal() {
         const { value, done: d } = await reader.read();
         if (d) break;
         buffer += decoder.decode(value, { stream: true });
-        let idx;
-        while ((idx = buffer.indexOf('\n\n')) !== -1) {
-          const chunk = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          chunk.split('\n').forEach(line => {
-            if (!line.startsWith('data:')) return;
-            const raw = line.slice(5);
-            if (raw === '[DONE]') return done = true;
-            if (raw.startsWith('ACCESS GRANTED')) {
-              term.current.writeln('');
-              term.current.writeln(`\x1b[1;32m${raw}\x1b[0m`);
-              term.current.writeln('\n💥 Prize unlocked! 💥');
-            } else {
-              try {
-                const delta = JSON.parse(raw).choices[0].delta.content;
-                if (delta) term.current.write(delta);
-              } catch {
-                term.current.write(raw);
-              }
+      
+        let splitIndex;
+        // find the end of the next SSE event (“\n\n”)
+        while ((splitIndex = buffer.indexOf('\n\n')) !== -1) {
+          // pull out one full SSE event
+          const sseEvent = buffer.slice(0, splitIndex);
+          buffer = buffer.slice(splitIndex + 2);
+      
+          // re-assemble all the “data:” lines into one JSON string
+          const dataLines = sseEvent.split('\n').filter(line => line.startsWith('data:'));
+          const raw = dataLines.map(line => line.slice(5)).join('\n');
+      
+          if (raw === '[DONE]') {
+            done = true;
+            break;
+          }
+      
+          try {
+            const delta = JSON.parse(raw).choices[0].delta.content;
+            if (delta) {
+              // Force every LF into CRLF so xterm.js shows a true newline
+              term.current.write(delta.replace(/\n/g, '\r\n'));
             }
-          });
+          } catch (e) {
+            // fallback: just dump whatever it was
+            term.current.write(raw.replace(/\n/g, '\r\n'));
+          }
         }
       }
       term.current.writeln('');
       term.current.write(PROMPT);
-    } catch {
+    } catch (e) {
+      console.log(e)
       term.current.writeln('\x1b[1;31m[Connection error]\x1b[0m');
       term.current.write(PROMPT);
     } finally {
@@ -169,7 +184,7 @@ export default function ChatTerminal() {
 
   useEffect(() => {
     // INIT TERMINAL
-    term.current = new Terminal({ cursorBlink: true, theme: { background: '#000', foreground: '#fff' } });
+    term.current = new Terminal({convertEol: true, cursorBlink: true, theme: { background: '#000', foreground: '#fff' } });
     fitAddon.current = new FitAddon();
     term.current.loadAddon(fitAddon.current);
 
