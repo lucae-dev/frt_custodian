@@ -114,33 +114,35 @@ export default function ChatTerminal() {
         const { value, done: d } = await reader.read();
         if (d) break;
         buffer += decoder.decode(value, { stream: true });
-      
-        let splitIndex;
-        // find the end of the next SSE event (“\n\n”)
-        while ((splitIndex = buffer.indexOf('\n\n')) !== -1) {
-          // pull out one full SSE event
-          const sseEvent = buffer.slice(0, splitIndex);
-          buffer = buffer.slice(splitIndex + 2);
-      
-          // re-assemble all the “data:” lines into one JSON string
-          const dataLines = sseEvent.split('\n').filter(line => line.startsWith('data:'));
-          const raw = dataLines.map(line => line.slice(5)).join('\n');
-      
-          if (raw === '[DONE]') {
-            done = true;
-            break;
-          }
-      
-          try {
-            const delta = JSON.parse(raw).choices[0].delta.content;
-            if (delta) {
-              // Force every LF into CRLF so xterm.js shows a true newline
-              term.current.write(delta.replace(/\n/g, '\r\n'));
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) !== -1) {
+          const chunk = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          chunk.split('\n').forEach(line => {
+            if (!line.startsWith('data:')) return;
+            const raw = line.slice(5);
+            if (raw === '[DONE]') return done = true;
+            if (raw.startsWith('>>>')) {
+              term.current.writeln('');
+              term.current.writeln(`\x1b[1;32m${raw}\x1b[0m`);
+              if (raw.startsWith('>>> ACCESS GRANTED')) {
+                term.current.writeln('\n💥 Prize unlocked! 💥');
+              }
+            } else {
+              try {
+                const delta = JSON.parse(raw).choices[0].delta.content;
+                if (delta) {
+                   delta.split('\n').forEach((line, i) => {
+                     // after the first line, emit an explicit newline
+                     if (i > 0) term.current.writeln('');
+                     term.current.write(line);
+                   });
+                  }
+              } catch {
+                term.current.write(raw);
+              }
             }
-          } catch (e) {
-            // fallback: just dump whatever it was
-            term.current.write(raw.replace(/\n/g, '\r\n'));
-          }
+          });
         }
       }
       term.current.writeln('');
