@@ -89,27 +89,34 @@ export default function ChatTerminal() {
   // SEND CHAT
   const send = async msg => {
     processing.current = true;
-    historyRef.current = [...historyRef.current, { role: 'user', content: msg }]
-      .slice(-MAX_HISTORY);
+
+    // Add user message to history
+    historyRef.current = [
+      ...historyRef.current,
+      { role: 'user', content: msg }
+    ].slice(-MAX_HISTORY);
     setHistory(historyRef.current);
+
     try {
       let clientId = getOrCreateClientId();
       const res = await fetch(`${import.meta.env.VITE_API_URL}/api/chat`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
-          'client-id': clientId || 'anonymous'  // fallback to avoid sending undefined
+          'client-id': clientId || 'anonymous'
         },
         body: JSON.stringify({ messages: historyRef.current, stream: true }),
       });
       if (!res.ok || !res.body) {
-        console.error   
-        throw new Error(); 
+        throw new Error('Network response was not ok');
       }
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let done = false;
+      let assistantMsg = '';
+
       while (!done) {
         const { value, done: d } = await reader.read();
         if (d) break;
@@ -132,23 +139,32 @@ export default function ChatTerminal() {
               try {
                 const delta = JSON.parse(raw).choices[0].delta.content;
                 if (delta) {
-                   delta.split('\n').forEach((line, i) => {
-                     // after the first line, emit an explicit newline
-                     if (i > 0) term.current.writeln('');
-                     term.current.write(line);
-                   });
-                  }
+                  assistantMsg += delta;
+                  delta.split('\n').forEach((line, i) => {
+                    if (i > 0) term.current.writeln('');
+                    term.current.write(line);
+                  });
+                }
               } catch {
                 term.current.write(raw);
+                assistantMsg += raw;
               }
             }
           });
         }
       }
+
+      // Add assistant message to history
+      historyRef.current = [
+        ...historyRef.current,
+        { role: 'assistant', content: assistantMsg }
+      ].slice(-MAX_HISTORY);
+      setHistory(historyRef.current);
+
       term.current.writeln('');
       term.current.write(PROMPT);
     } catch (e) {
-      console.log(e)
+      console.error(e);
       term.current.writeln('\x1b[1;31m[Connection error]\x1b[0m');
       term.current.write(PROMPT);
     } finally {
@@ -158,9 +174,8 @@ export default function ChatTerminal() {
 
   // MATRIX RAIN ANIMATION
   const performMatrixRain = async lines => {
-    term.current.clear();             // clear boot text
-    term.current.write('\x1b[?25l'); // hide cursor
-    // drop each char with random delay
+    term.current.clear();
+    term.current.write('\x1b[?25l');
     lines.forEach((line, row) => {
       line.split('').forEach((ch, col) => {
         setTimeout(() => {
@@ -168,9 +183,8 @@ export default function ChatTerminal() {
         }, Math.random() * RAIN_DURATION);
       });
     });
-    // wait for all drops
     await new Promise(r => setTimeout(r, RAIN_DURATION));
-    // green flash
+    // flash effect
     const flash = document.createElement('div');
     Object.assign(flash.style, {
       position: 'absolute', top: 0, left: 0,
@@ -180,12 +194,11 @@ export default function ChatTerminal() {
     containerRef.current.appendChild(flash);
     await new Promise(r => setTimeout(r, FLASH_DURATION));
     containerRef.current.removeChild(flash);
-    term.current.write('\x1b[?25h'); // show cursor
-    term.current.clear();             // final clear after flash
+    term.current.write('\x1b[?25h');
+    term.current.clear();
   };
 
   useEffect(() => {
-    // INIT TERMINAL
     term.current = new Terminal({convertEol: true, cursorBlink: true, theme: { background: '#000', foreground: '#fff' } });
     fitAddon.current = new FitAddon();
     term.current.loadAddon(fitAddon.current);
@@ -195,7 +208,6 @@ export default function ChatTerminal() {
     term.current.open(container);
     fitAddon.current.fit();
 
-    // BOOT LINES + ERRORS
     const bootLines = [...Array(20).keys()].map(i => `[BOOT] Initializing module ${i+1}/20...`)
       .concat([
         '[OK] Core modules loaded.',
@@ -211,7 +223,6 @@ export default function ChatTerminal() {
         '[CRITICAL] Unhandled exception: AI_CONSCIOUSNESS_DETECTED'
       ]);
 
-    // RUN BOOT + RAIN + LIVE TRANSITION
     let idx = 0;
     const interval = setInterval(() => {
       if (idx < bootLines.length) {
@@ -219,7 +230,6 @@ export default function ChatTerminal() {
       } else {
         clearInterval(interval);
         performMatrixRain(bootLines).then(() => {
-          // switch to live mode
           container.classList.add('live-theme');
           term.current.options.theme = matrixTheme;
           term.current.writeln('');
@@ -231,9 +241,9 @@ export default function ChatTerminal() {
       }
     }, BOOT_DELAY);
 
-    // RESIZE HANDLER
     const onResize = () => fitAddon.current.fit();
     window.addEventListener('resize', onResize);
+
     return () => {
       clearInterval(interval);
       window.removeEventListener('resize', onResize);
